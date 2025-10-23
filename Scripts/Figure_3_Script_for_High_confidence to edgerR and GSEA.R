@@ -1,0 +1,914 @@
+# Script to find high confidence sites, compare with REDIportal, run edgeR for differential editing, GSEA and plot the results
+
+# Working directory 
+setwd("G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\Jacusa")
+
+#===============================================================================
+#===============================================================================
+#===============================================================================
+#libraries
+library(dplyr)
+library(stringr)
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+
+
+# Compare and filter only those ADAR editing sites that are present in 
+# VCf files generated from Jacusa and AIDD (GATK)
+#=== filter all the jacusa files to include only ADAR edits ====================
+
+# List of JACUSA VCF saved as .csv files 
+files <- list.files(pattern = "*.csv")
+
+# Function to process each JACUSA file and filter only A>G and T>C sites and write to a separate file 
+process_file <- function(file) {
+  df <- read.csv(file, row.names = 1)
+  df <- df %>%
+    dplyr::filter((REF == "A" & ALT == "G") | (REF == "T" & ALT == "C"))
+  write.csv(df, file = paste0("ADAR_only_", file), row.names = FALSE)
+}
+
+# Apply the function on jacusa files
+lapply(files, process_file)
+
+#===============================================================================
+
+# Copy AIDD - ADAR only vcf files and convert to ,csv files 
+source_folder <- "F:\\Manuscript_2\\Original_Data\\vcf_files\\vcf_files\\final"
+destination_folder <- "F:\\Manuscript_2_rerunning_new\\High_Confidence_to_DE\\AIDD"
+
+# list of all files with .VCF extension in the source folder
+vcf_files <- dir(source_folder, pattern = "SRR.*filtered_snps_finalADARediting\\.vcf", full.names = TRUE)
+
+# Copy the files from source to destination
+file.copy(vcf_files, destination_folder)
+
+
+#=========== Read Aidd-vcf by skipping lines starting with ## and save as csv =======
+
+# Directory containing VCF files 
+vcf_dir <- "F:\\Manuscript_2_rerunning_new\\High_Confidence_to_DE\\AIDD"  
+
+# List if all .VCF files in the above folder
+vcf_files <- list.files(vcf_dir, pattern = "\\.vcf$", full.names = TRUE)
+
+# This will Loop through each VCF file to read files,
+# remove ## lines, extract header from the first remaining line, 
+# and read rest of the data 
+# and save the output as .csv file
+
+for (vcf_file in vcf_files) {
+  vcf <- readLines(vcf_file)
+  vcf <- vcf[!grepl("^##", vcf)]
+  header <- strsplit(vcf[1], "\t")[[1]]
+  data <- read.table(text = paste(vcf[-1], collapse = "\n"), sep = "\t", header = FALSE, stringsAsFactors = FALSE)
+  colnames(data) <- header
+  output_csv <- sub("\\.vcf$", ".csv", vcf_file)
+  write.csv(data, output_csv, row.names = FALSE)
+}
+
+#===============================================================================  
+
+# copy the AIDD .csv files from the VCf folder to a new folder for analysis
+source_dir <- "F:\\Manuscript_2_rerunning_new\\High_Confidence_to_DE\\AIDD"
+destination_dir <- "F:\\Manuscript_2_rerunning_new\\High_Confidence_to_DE\\AIDD\\AIDD_csv"
+files <- list.files(source_dir, pattern = "SRR.*filtered_snps_finalADARediting\\.csv", full.names = TRUE)
+file.copy(files, destination_dir, overwrite = TRUE)
+
+#===============================================================================
+# Add the column CHROM_POS in the AIDD vcf files to match JACUSA files 
+
+# Working directory
+setwd("F:\\Manuscript_2_rerunning_new\\High_Confidence_to_DE\\AIDD\\AIDD_csv")
+
+# List of all files in the AIDD folder (these are AIDD-VCF files saved as .csv)
+files <- dir(pattern = "*.csv")
+
+# Loop through each file
+for (file in files) {
+  col_names <- c("CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO", "FORMAT", "20")
+  df <- read.csv(file, header = FALSE, sep = ",", col.names = col_names)
+  df <- df %>%
+    mutate(CHROM_POS = str_c(CHROM, "_", POS)) # Add the new column
+  # Write the updated dataframe to a .csv file
+  write.csv(df, paste0(file, "CHROM_POS.csv"), row.names = FALSE)
+}
+
+#===============================================================================  
+# Copy the .csv files from the VCf folder to a new folder for further analysis
+source_dir <- "F:\\Manuscript_2_rerunning_new\\High_Confidence_to_DE\\AIDD\\AIDD_csv"
+destination_dir <- "F:\\Manuscript_2_rerunning_new\\High_Confidence_to_DE\\AIDD\\AIDD_csv_chr_pos"
+files <- list.files(source_dir, pattern = "SRR.*filtered_snps_finalADARediting.csvCHROM_POS\\.csv", full.names = TRUE)
+file.copy(files, destination_dir, overwrite = TRUE)
+#===============================================================================
+
+# Define the file range
+file_ids <- sprintf("SRR14240%02d", 730:798)  # Generates SRR14240732 to SRR14240798
+
+# Setting the directories with AIDD and Jacusa files and o/p directory
+aidd_dir <- "F:\\Manuscript_2_rerunning_new\\High_Confidence_to_DE\\AIDD\\AIDD_csv_chr_pos\\"
+jacusa_dir <- "F:\\Manuscript_2_rerunning_new\\High_Confidence_to_DE\\Jacusa\\Jacusa_adar_only\\"
+output_dir <- "F:\\Manuscript_2_rerunning_new\\High_Confidence_to_DE\\AIDD_JACUSA_merged_by_CHROM_POS_CommonPos\\"
+
+# Loop through each file
+for (file_id in file_ids) {
+  # Include full file paths
+  aidd_file <- paste0(aidd_dir, file_id, "filtered_snps_finalADARediting.csvCHROM_POS.csv")
+  jacusa_file <- paste0(jacusa_dir, "ADAR_only_", file_id, ".csv")
+  output_file <- paste0(output_dir, file_id, "_merged_by_CHROM_POS.csv")
+  
+  # Read the files
+  if (file.exists(aidd_file) & file.exists(jacusa_file)) {
+    aidd_data <- read.csv(aidd_file)
+    jacusa_data <- read.csv(jacusa_file)
+    
+    # Intersect the VCF files from Jacusa and AIDD based on column CHROM_POS, to the filtered 
+    # coordinates add read depth, filter for stack depth >=20, add editing levels, and filter for editing levels 
+    
+    filtered_data <- jacusa_data %>%
+      filter(CHROM_POS %in% aidd_data$CHROM_POS) %>%
+      mutate(stack_depth = A + T + G + C) %>%
+      filter(stack_depth >= 20) %>%
+      mutate(editing_level = ifelse(REF == "A", G / stack_depth, C / stack_depth))%>%
+      filter(editing_level >= 0.2 & editing_level < 0.99, 
+             !(editing_level >= 0.49 & editing_level <= 0.51))
+    
+    # Save the output
+    write.csv(filtered_data, output_file, row.names = FALSE)
+    
+    cat("File in progress:", file_id, "\n")  
+  } else {
+    cat("Skipping:", file_id, " - no file.\n")
+  }
+}
+
+#=====================Finding high confidence sites ============================
+
+# List Jacusa and AIDD files and read 
+AIDD_JAC_file <- list.files(path = "G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\AIDD_JACUSA_merged_by_CHROM_POS_CommonPos", 
+                            full.names = TRUE, pattern = "*.csv")  
+list_of_AIDD_JAC_files <- lapply(AIDD_JAC_file, read.csv)
+
+# Step 1: Extract unique CHROM_POS values from each file
+chrom_pos_lists <- lapply(list_of_AIDD_JAC_files, function(df) unique(df$CHROM_POS))
+
+# Step 2: Unlist the CHROM_POS values and count occurrences in each file
+chrom_pos_counts <- table(unlist(chrom_pos_lists))
+
+# Step 3: Calculate the cutoff for 20% of the number of files
+Cutoff <- 0.2 * length(list_of_AIDD_JAC_files)
+
+# Step 4: Identify CHROM_POS values that appear in atleast 20% of files
+shared_chrom_pos <- names(chrom_pos_counts[chrom_pos_counts >= Cutoff])
+
+# Convert the character vector to a dataframe
+shared_chrom_pos <- data.frame(CHROM_POS = shared_chrom_pos)
+
+# Step 5: Filter the combined data based on shared CHROM_POS
+combined_data <- do.call(rbind, list_of_AIDD_JAC_files)
+
+# Step 6: Merge the dataframes and remove duplicates
+merged_df <- merge(shared_chrom_pos, combined_data, by = "CHROM_POS", all.x = TRUE)
+merged_df <- merged_df %>% distinct(CHROM_POS, .keep_all = TRUE)
+head(merged_df)
+
+# Step 6: Write the filtered data to a CSV file
+write.csv(merged_df, file = "G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\High_confidence_annotated_in20%samples.csv", row.names = FALSE)
+
+#===============================================================================
+## edgeR requires a matrix of T>C and A>G 
+#===============================================================================
+
+#-----T to C marix -------------------------------------------------------------
+
+# Path to filtered files
+path <- "G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\AIDD_JACUSA_merged_by_CHROM_POS_CommonPos"
+
+# Get list of CSV files with full path
+file_list <- list.files(path = path, full.names = TRUE, pattern = "*.csv")
+
+# Function to read CSV files, filter for T>C substitutions, and rename columns
+read_and_label_file <- function(file) {
+  df <- read.csv(file)
+  
+  # Extract SRR number from the file name
+  srr_number <- sub(".*(SRR\\d+).*", "\\1", basename(file))
+  
+  # Ensure only T>C substitutions are kept
+  df <- df %>%
+    filter(REF == "T" & ALT == "C") %>%  # Retain only rows where reference base is T
+    select(CHROM_POS, T, C) %>%  # Select relevant columns
+    rename_with(~ paste0(., "_", srr_number), -CHROM_POS)  # Append SRR number to column names
+  
+  return(df)
+}
+
+# Read and process CSV files into a list of data frames
+list_of_files <- lapply(file_list, read_and_label_file)
+
+# Step 1: Extract unique CHROM_POS values from each file
+chrom_pos_lists <- lapply(list_of_files, function(df) unique(df$CHROM_POS))
+
+# Step 2: Count occurrences of each CHROM_POS across all files
+chrom_pos_counts <- table(unlist(chrom_pos_lists))
+
+# Step 3: Define cutoff for 20% of the number of files
+cutoff <- 0.2 * length(list_of_files)
+
+# Step 4: Identify CHROM_POS values that appear in at least 20% of files
+shared_chrom_pos <- names(chrom_pos_counts[chrom_pos_counts >= cutoff])
+
+# Function to filter data frames based on shared CHROM_POS
+filter_shared_chrom_pos <- function(df) {
+  df %>% filter(CHROM_POS %in% shared_chrom_pos)
+}
+
+# Filter each data frame based on shared CHROM_POS
+filtered_files <- lapply(list_of_files, filter_shared_chrom_pos)
+
+# Step 5: Merge the data frames based on shared CHROM_POS
+combined_data <- Reduce(function(x, y) merge(x, y, by = "CHROM_POS", all = TRUE), filtered_files)
+
+# Step 6: Replace NA values with 0
+combined_data[is.na(combined_data)] <- 0
+
+# Step 7: Write the filtered and merged data to a CSV file
+output_file <- "G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\filtered_combined_data_edgeR_TCmatrix.csv"
+write.csv(combined_data, file = output_file, row.names = FALSE)
+
+#----------------- A to G matrix -----------------------------------------------
+
+# Define the path to the filtered files
+path <- "G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\AIDD_JACUSA_merged_by_CHROM_POS_CommonPos"
+
+# Get list of CSV files with full path
+file_list <- list.files(path = path, full.names = TRUE, pattern = "*.csv")
+
+# Function to read CSV files, filter for A>G substitutions, and rename columns
+read_and_label_file <- function(file) {
+  df <- read.csv(file)
+  
+  # Extract SRR number from the file name
+  srr_number <- sub(".*(SRR\\d+).*", "\\1", basename(file))
+  
+  # Keep only T>C substitutions
+  df <- df %>%
+    filter(REF == "A" & ALT == "G") %>%  # Retain only rows where reference base is T
+    select(CHROM_POS, A, G) %>%  # Select relevant columns
+    rename_with(~ paste0(., "_", srr_number), -CHROM_POS)  # Append SRR number to column names
+  
+  return(df)
+}
+
+# Read and process CSV files into a list of data frames
+list_of_files <- lapply(file_list, read_and_label_file)
+
+# Step 1: Extract unique CHROM_POS values from each file
+chrom_pos_lists <- lapply(list_of_files, function(df) unique(df$CHROM_POS))
+
+# Step 2: Count occurrences of each CHROM_POS across all files
+chrom_pos_counts <- table(unlist(chrom_pos_lists))
+
+# Step 3: Define cutoff for 20% of the number of files
+cutoff <- 0.2 * length(list_of_files)
+
+# Step 4: Identify CHROM_POS values that appear in at least 20% of files
+shared_chrom_pos <- names(chrom_pos_counts[chrom_pos_counts >= cutoff])
+
+# Function to filter data frames based on shared CHROM_POS
+filter_shared_chrom_pos <- function(df) {
+  df %>% filter(CHROM_POS %in% shared_chrom_pos)
+}
+
+# Filter each data frame based on shared CHROM_POS
+filtered_files <- lapply(list_of_files, filter_shared_chrom_pos)
+
+# Step 5: Merge the data frames based on shared CHROM_POS
+combined_data <- Reduce(function(x, y) merge(x, y, by = "CHROM_POS", all = TRUE), filtered_files)
+
+# Step 6: Replace NA values with 0
+combined_data[is.na(combined_data)] <- 0
+
+# Step 7: Write the filtered and merged data to a CSV file
+output_file <- "G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\filtered_combined_data_edgeR_AGmatrix.csv"
+write.csv(combined_data, file = output_file, row.names = FALSE)
+
+#==========High-confidence sites compared to REDI sites=========================
+
+# Working directory
+setwd("G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\HighConfidence_REDI")
+
+# Load high-confidence ADAR editing sites
+high_confidence_data <- read.csv("High_confidence_annotated_in20%samples.csv", header = TRUE)
+high_confidence_sites <- high_confidence_data$CHROM_POS  # Extract only the coordinate column
+
+# Load REDIportal data
+redi_data <- fread("TABLE1_hg19.txt", header = TRUE, fill = TRUE, stringsAsFactors = FALSE)
+
+# Remove 'chr' prefix from chromosome column in REDIportal data
+redi_data$Region <- gsub("chr", "", redi_data$Region)
+
+# Merge chromosome and position to create unique coordinates
+redi_data$ADAR_coordinate <- paste(redi_data$Region, redi_data$Position, sep = "_")
+
+# Check if high-confidence sites are present in REDIportal
+high_confidence_data$present_in_redi <- high_confidence_data$CHROM_POS %in% redi_data$ADAR_coordinate
+#print(head(high_confidence_data))
+
+# Count the number of sites present and not present in REDIportal
+counts_of_present_absent <- table(high_confidence_data$present_in_redi)
+#print(counts_of_present_absent)
+
+# Convert the counts to a dataframe for plotting
+counts_of_present_absent_df <- as.data.frame(counts_of_present_absent)
+colnames(counts_of_present_absent_df) <- c("Presence", "Count")
+
+# Rename levels for clarity
+counts_of_present_absent_df$Presence <- ifelse(counts_of_present_absent_df$Presence == TRUE, 
+                                               "Present in REDIportal", 
+                                               "Not present in REDIportal")
+
+# Bar plot
+high_confidence_sites_REDI <- ggplot(counts_of_present_absent_df, aes(x = Presence, y = Count, fill = Presence)) +
+  geom_bar(stat = "identity", width = 0.5) +
+  geom_text(aes(label = Count), vjust = -0.5) +  # Add text labels on top of bars
+  labs(y = "Number of high confidence ADAR editing sites", x = NULL) +
+  scale_fill_manual(values = c("Present in REDIportal" = "darkmagenta", 
+                               "Not present in REDIportal" = "lightblue")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        legend.text = element_text(size = 14),
+        legend.title = element_blank(),
+        legend.position = "bottom")
+#legend.justification = c("right", "top"))
+
+ggsave("high_confidence_sites_REDI.png", width = 7, height = 9)
+
+# Extract coordinates of present and absent sites and save
+present_sites <- high_confidence_data[high_confidence_data$present_in_redi == TRUE, ]
+absent_sites <- high_confidence_data[high_confidence_data$present_in_redi == FALSE, ]
+write.csv(present_sites, "Present_in_REDIportal.csv", row.names = FALSE)
+write.csv(absent_sites, "Not_present_in_REDIportal.csv", row.names = FALSE)
+
+#=========Genomic distribution of sites that are present/non present in REDI ==============================
+setwd("G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\HighConfidence_REDI\\REDI_present_not_present")
+
+# Function to filter and count ADAR editing sites by genomic region
+process_file <- function(file_path) {
+  ADARonly_VCF_files <- read.csv(file_path, header = TRUE, sep = ",")
+  
+  # Filter: keep rows where either "REF = A" and "ALT = G" or "REF = T" and "ALT = C"
+  filtered_data <- ADARonly_VCF_files %>% filter((REF == "A" & ALT == "G") | (REF == "T" & ALT == "C"))
+  
+  # Count total number of each substitution
+  ref_tally_intergenic <- sum(filtered_data$snpEff_Annotation == "intergenic_region")
+  ref_tally_intronic <- sum(filtered_data$snpEff_Annotation == "intron_variant")
+  ref_tally_3UTR <- sum(filtered_data$snpEff_Annotation == "3_prime_UTR_variant")
+  
+  # 5'UTR
+  ref_tally_5UTR <- sum(filtered_data$snpEff_Annotation == "5_prime_UTR_variant" | 
+                          filtered_data$snpEff_Annotation == "5_prime_UTR_premature_start_codon_gain_variant")
+  
+  # Splice site categories
+  ref_tally_SPLICE_SITE_ACCEPTOR <- sum(filtered_data$snpEff_Annotation %in% c(
+    "splice_acceptor_variant&intron_variant", 
+    "splice_acceptor_variant&splice_donor_variant&intron_variant",
+    "splice_donor_variant&intron_variant",
+    "splice_donor_variant&splice_region_variant&intron_variant"
+  ))
+  
+  ref_tally_SPLICE_SITE_REGION <- sum(filtered_data$snpEff_Annotation %in% c(
+    "splice_region_variant",
+    "splice_region_variant&intron_variant",
+    "splice_region_variant&non_coding_transcript_exon_variant",
+    "splice_region_variant&stop_retained_variant",
+    "splice_region_variant&synonymous_variant",
+    "stop_lost&splice_region_variant"
+  ))
+  
+  # Exon
+  ref_tally_EXON <- sum(filtered_data$snpEff_Annotation %in% c("start_lost", "stop_lost", "synonymous_variant"))
+  
+  # Upstream & Downstream
+  ref_tally_downstream <- sum(filtered_data$snpEff_Annotation == "downstream_gene_variant")
+  ref_tally_upstream <- sum(filtered_data$snpEff_Annotation == "upstream_gene_variant")
+  
+  # Extract file name
+  file_name <- tools::file_path_sans_ext(basename(file_path))
+  
+  return(list(
+    sample = file_name,
+    intergenic = ref_tally_intergenic,
+    intronic = ref_tally_intronic,
+    UTR_3 = ref_tally_3UTR,
+    UTR_5 = ref_tally_5UTR,
+    splice_acceptor = ref_tally_SPLICE_SITE_ACCEPTOR,
+    splice_region = ref_tally_SPLICE_SITE_REGION,
+    exon = ref_tally_EXON,
+    downstream = ref_tally_downstream,
+    upstream = ref_tally_upstream
+  ))
+}
+
+# Directory containing CSV files
+directory_path <- "G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\HighConfidence_REDI\\REDI_present_not_present"
+files <- list.files(pattern = "*.csv", full.names = TRUE, path = directory_path)
+
+# Process all files
+results_list <- lapply(files, process_file)
+
+# Convert results to a dataframe
+Total_substitutions <- do.call(rbind, lapply(results_list, as.data.frame))
+
+# Write 
+write.csv(Total_substitutions, "Result_Total_substitutions.csv", row.names = FALSE)
+
+# Sample data 
+data <- read.csv("Result_Total_substitutions.csv")
+
+# Reshape the data for ggplot
+melted_data <- melt(data, id.vars = "sample", variable.name = "Genomic_Region", value.name = "Count")
+
+# Grouped bar plot
+
+REDI_present_not_present <- ggplot(melted_data, aes(x = Genomic_Region, y = Count, fill = factor(sample))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = Count), position = position_dodge(width = 0.8), vjust = -0.3) +  # Adjusted vjust and dodge position
+  labs(x = "Genomic Region",
+       y = "Number of ADAR edits",
+       fill = "Category") +
+  scale_fill_manual(values = c("Not_present_in_REDIportal" = "lightblue", "Present_in_REDIportal" = "darkmagenta")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 14),  
+        axis.text.y = element_text(size = 14),  
+        axis.title.x = element_text(size = 10),  
+        axis.title.y = element_text(size = 16),  
+        legend.text = element_text(size = 14),
+        legend.position = c(0.9, 0.9),  # This will position legend inside on the top corner
+        legend.justification = c("right", "top"))
+
+ggsave("G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\HighConfidence_REDI\\REDI_present_not_present\\REDI_present_not_present.png", width = 8, height = 5)
+
+#======================== edgeR - differential editing analysis =================
+
+# Note : A>G and T>C substitutions were run separately
+
+#-------------------edgeR A>G --------------------------------------------------
+
+setwd("G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\DES_edgeR")
+
+library(edgeR)
+library(ComplexHeatmap)
+
+# Load data and filter 
+test_data <- read.csv("filtered_combined_data_edgeR_AGmatrix.csv", row.names = 1)
+head(test_data)
+
+# Keep only editing sites with at least 20 reads across samples
+keep <- rowSums(test_data) >= 20
+test_data <- test_data[keep, ]
+
+# Metadata
+pdata <- read.csv("pdata.csv", row.names = 1)
+
+# Convert `sample_id` to a factor
+pdata$sample_id <- factor(pdata$sample_id)
+
+# Ensure pdata structure is correct
+str(pdata)
+head(pdata)
+all(colnames(test_data) %in% rownames(pdata))
+all(colnames(test_data) == rownames(pdata))
+
+# Design matrix
+design <- model.matrix(~0 + sample_id + treatment:allele, data = pdata)
+
+# Remove alleleA to make the matrix full rank
+design <- design[, !grepl("alleleA", colnames(design))]
+colnames(design)
+
+# Create DGEList object
+dge <- DGEList(counts = test_data)
+
+# Adjust library sizes correctly
+total_lib_sizes <- tapply(dge$samples$lib.size, pdata$sample_id, sum)
+dge$samples$lib.size <- rep(total_lib_sizes, each = 2)
+
+# Estimate dispersion
+dge <- estimateDisp(dge, design)
+
+# Fit GLM model
+fit <- glmFit(dge, design)
+
+# Verify contrast length matches number of design columns
+Critical_v_Non_critical <- c(rep(0, 69), 1, -1)
+
+# Perform likelihood ratio test
+con <- glmLRT(fit, contrast = Critical_v_Non_critical)
+
+# Get results
+tt <- topTags(con, n = nrow(dge))
+tt <- as.data.frame(tt)
+
+# # Filter significant sites (FDR < 0.01)
+# filtered_tt <- tt[tt$FDR < 0.01, ]
+# dim(filtered_tt)
+
+filtered_tt <- tt[tt$FDR < 0.05 & abs(tt$logFC) >= 0.58, ]
+dim(filtered_tt)
+
+# Save results
+write.csv(tt, "Differential_editing_results_AtoG_beforefilters.csv")
+write.csv(filtered_tt, "Differential_editing_results_AtoG_filtered_FDR0.05_FC0.58_results.csv")
+
+# # Filter significant sites (FDR < 0.05)
+# filtered_tt_FDR_05 <- tt[tt$FDR < 0.05, ]
+# dim(filtered_tt_FDR_05)
+# 
+# # Save results
+# write.csv(filtered_tt_FDR_05, "Differential_editing_results_AtoG_filtered_FDR0.05_results.csv")
+
+# Annotated the above result dataframe using initial high-confidence dataframe
+High_confidence_master_df <- read.csv("High_confidence_annotated_in20%samples.csv")
+tt$CHROM_POS <- rownames(tt)
+filtered_tt$CHROM_POS <- rownames(filtered_tt)
+
+
+# Merge the annotation dataframe with differential editing results
+annotated_tt <- merge(tt, High_confidence_master_df, by = "CHROM_POS", all.x = TRUE)
+annotated_filtered_tt <- merge(filtered_tt, High_confidence_master_df, by = "CHROM_POS", all.x = TRUE)
+#annotated_filtered_tt_FDR_05 <- merge(filtered_tt_FDR_05, High_confidence_master_df, by = "CHROM_POS", all.x = TRUE)
+write.csv(annotated_tt, "edgeR_AG_results_before_filterannotated.csv", row.names = FALSE)
+write.csv(annotated_filtered_tt, "edgeR_AG_results_FDR0_05_FC0.05_annotated.csv", row.names = FALSE)
+#write.csv(annotated_filtered_tt_FDR_05, "edgeR_AG_results_FDR_05_annotated.csv", row.names = FALSE)
+
+#=======================edgeR T>C ==============================================
+
+setwd("G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\DES_edgeR")
+
+library(edgeR)
+library(ComplexHeatmap)
+
+# Load data and filter 
+test_data <- read.csv("filtered_combined_data_edgeR_TCmatrix.csv", row.names = 1)
+head(test_data)
+
+# Keep only editing sites with at least 20 reads across samples
+keep <- rowSums(test_data) >= 20
+test_data <- test_data[keep, ]
+
+# Metadata
+pdata <- read.csv("pdata_TC.csv", row.names = 1)
+
+# Convert `sample_id` to a factor
+pdata$sample_id <- factor(pdata$sample_id)
+
+# Ensure `pdata` structure is correct
+str(pdata)
+head(pdata)
+all(colnames(test_data) %in% rownames(pdata))
+all(colnames(test_data) == rownames(pdata))
+
+# Design matrix
+design <- model.matrix(~0 + sample_id + treatment:allele, data = pdata)
+
+# Remove alleleA to make the matrix full rank
+design <- design[, !grepl("alleleT", colnames(design))]
+colnames(design)
+
+# Create DGEList object
+dge <- DGEList(counts = test_data)
+
+# Adjust library sizes correctly
+total_lib_sizes <- tapply(dge$samples$lib.size, pdata$sample_id, sum)
+dge$samples$lib.size <- rep(total_lib_sizes, each = 2)
+
+# Estimate dispersion
+dge <- estimateDisp(dge, design)
+
+# Fit GLM model
+fit <- glmFit(dge, design)
+
+# Verify contrast length matches number of design columns
+Critical_v_Non_critical <- c(rep(0, 69), 1, -1)
+
+# Perform likelihood ratio test
+con <- glmLRT(fit, contrast = Critical_v_Non_critical)
+
+# Get results
+tt <- topTags(con, n = nrow(dge))
+tt <- as.data.frame(tt)
+
+# # Filter significant sites (FDR < 0.01)
+# filtered_tt <- tt[tt$FDR < 0.01, ]
+# dim(filtered_tt)
+
+filtered_tt <- tt[tt$FDR < 0.05 & abs(tt$logFC) >= 0.58, ]
+dim(filtered_tt)
+
+# Save results
+write.csv(tt, "Differential_editing_results_TtoC_beforefilters.csv")
+write.csv(filtered_tt, "Differential_editing_results_TtoC_filtered_FDR0.05_FC0.58_results.csv")
+
+# # Filter significant sites (FDR < 0.05)
+# filtered_tt_FDR_05 <- tt[tt$FDR < 0.05, ]
+# dim(filtered_tt_FDR_05)
+# 
+# # Save results
+# write.csv(filtered_tt_FDR_05, "Differential_editing_results_AtoG_filtered_FDR0.05_results.csv")
+
+# Annotated the above result dataframe using initial high-confidence dataframe
+High_confidence_master_df <- read.csv("High_confidence_annotated_in20%samples.csv")
+tt$CHROM_POS <- rownames(tt)
+filtered_tt$CHROM_POS <- rownames(filtered_tt)
+
+
+# Merge the annotation dataframe with differential editing results
+annotated_tt <- merge(tt, High_confidence_master_df, by = "CHROM_POS", all.x = TRUE)
+annotated_filtered_tt <- merge(filtered_tt, High_confidence_master_df, by = "CHROM_POS", all.x = TRUE)
+#annotated_filtered_tt_FDR_05 <- merge(filtered_tt_FDR_05, High_confidence_master_df, by = "CHROM_POS", all.x = TRUE)
+write.csv(annotated_tt, "edgeR_TC_results_before_filterannotated.csv", row.names = FALSE)
+write.csv(annotated_filtered_tt, "edgeR_TC_results_FDR0_05_FC0.05_annotated.csv", row.names = FALSE)
+#write.csv(annotated_filtered_tt_FDR_05, "edgeR_AG_results_FDR_05_annotated.csv", row.names = FALSE)
+
+#========== combine the above two (A to G and T to C) and apply filters ========
+# Read the two differential editing result files
+df_AG <- read.csv("edgeR_AG_results_before_filterannotated.csv")
+df_TC <- read.csv("edgeR_TC_results_before_filterannotated.csv")
+
+# Add a column to specify the mutation type
+df_AG$Mutation <- "A>G"
+df_TC$Mutation <- "T>C"
+
+# Combine both datasets
+combined_df <- rbind(df_AG, df_TC)
+write.csv(combined_df, "Differential_editing_combined_ATGC_annotated_before_filters.csv", row.names = FALSE)
+
+
+
+# Read the two differential editing result files
+df_AG <- read.csv("edgeR_AG_results_FDR0_05_FC0.05_annotated.csv")
+df_TC <- read.csv("edgeR_TC_results_FDR0_05_FC0.05_annotated.csv")
+
+# Add a column to specify the mutation type
+df_AG$Mutation <- "A>G"
+df_TC$Mutation <- "T>C"
+
+# Combine both datasets
+combined_df <- rbind(df_AG, df_TC)
+write.csv(combined_df, "edgeR_ATGC_results_FDR0_05_FC0.05_annotated.csv", row.names = FALSE)
+
+
+#========== combine the above two (A to G and T to C) and apply filters ========
+library(dplyr)
+library(ggplot2)
+
+combined_df <- read.csv("edgeR_ATGC_results_FDR0_05_FC0.05_annotated.csv")
+
+# Select top 30 up- and down-regulated edits
+top_up <- combined_df %>% arrange(desc(logFC)) %>% head(30)
+top_down <- combined_df %>% arrange(logFC) %>% head(30)
+
+# Combine
+top_combined <- bind_rows(top_up, top_down)
+
+# Combined label for y-axis
+top_combined <- top_combined %>%
+  mutate(Gene_ChrPos = paste0(snpEff_GeneName, " | ", CHROM_POS))
+
+# Make it a factor to preserve order
+top_combined$Gene_ChrPos <- factor(top_combined$Gene_ChrPos,
+                                   levels = top_combined$Gene_ChrPos)
+
+# Plot
+ggplot(top_combined, aes(x = Gene_ChrPos, y = logFC, fill = logFC)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = "Differentially ADAR edited site",
+       y = "log2 Fold Change (logFC)") +
+  scale_fill_gradientn(
+    colours = colorRampPalette(c('#709AE1', '#FFFFFF', '#FD7446'))(100)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 14),  
+        axis.text.y = element_text(size = 12),  
+        axis.title.x = element_text(size = 14),  
+        axis.title.y = element_text(size = 16),  
+        legend.text = element_text(size = 14))
+
+# Save plot
+ggsave("Differential_editing.png", width = 10, height = 15)
+
+
+#================= REACTOME - GSEA ==============================================
+## GSEA workflow
+setwd("G:\\Manuscript_2_rerunning_new_SG\\High_Confidence_to_DE\\DES_edgeR")
+
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+library(tibble)
+library(ReactomePA)
+library(enrichplot)
+library(stringr)
+library(ggplot2)
+
+df <- read.csv("Differential_editing_combined_ATGC_annotated_before_filters.csv")
+dim(df)
+
+# Combine columns CHROM_pos and snpEff_GeneID (since there could be same gene with multiple sites)
+df$snpEff_GeneID_CHROM_POS <- paste(df$snpEff_GeneID, df$CHROM_POS, sep = "_")
+dim(df)
+
+# Making sure there are no duplicates
+df_clean <- df %>%
+  filter(!is.na(snpEff_GeneID_CHROM_POS)) %>%
+  distinct(snpEff_GeneID_CHROM_POS, .keep_all = TRUE)
+head(df_clean)
+
+# 3. Map Ensembl gene IDs to Entrez IDs
+gene_mapping <- bitr(df_clean$snpEff_GeneID,
+                     fromType = "ENSEMBL",
+                     toType = "ENTREZID",
+                     OrgDb = org.Hs.eg.db)
+
+
+df_merged <- df_clean %>%
+  inner_join(gene_mapping, by = c("snpEff_GeneID" = "ENSEMBL"))
+head(df_merged)
+
+# 5. Named vector of logFC values for GSEA
+gene_list <- df_merged$logFC
+names(gene_list) <- df_merged$ENTREZID
+gene_list <- sort(gene_list, decreasing = TRUE)
+
+#If you use ReactomePA in published research, please cite:
+#Guangchuang Yu, Qing-Yu He. ReactomePA: an R/Bioconductor package for reactome pathway analysis and visualization. Molecular BioSystems 2016, 12(2):477-479
+
+reactome_gsea <- gsePathway(geneList = gene_list,
+                            organism = "human",
+                            pvalueCutoff = 0.05,
+                            pAdjustMethod = "BH",
+                            verbose = FALSE)
+
+
+# Step 1: Calculate similarity between pathways
+reactome_gsea_sim <- pairwise_termsim(reactome_gsea)
+
+# Step 2: Now plot the enrichment map
+emapplot(reactome_gsea_sim,
+         showCategory = 40,
+         layout = "fr",
+         color = "p.adjust")
+ggsave("Reactome_emmaplot_edgeR_OP.png", width = 12, height = 12, dpi = 300)
+
+dotplot(
+  reactome_gsea,
+  x = "GeneRatio",
+  color = "p.adjust",
+  showCategory = 40,
+  size = NULL,
+  split = NULL,
+  font.size = 12,
+  title = "Reactome Pathways",
+  #orderBy = "NES",
+  label_format = 30
+) +
+  theme(axis.text.x = element_text(size = 14), 
+        axis.text.y = element_text(size = 14),
+        axis.title.x = element_text(size = 16))
+ggsave("Reactome_dotplot_edgeROP.png", width = 15, height = 19, dpi = 400)
+
+
+results_reactome_GSEA <- as.data.frame(reactome_gsea)
+dim(results_reactome_GSEA)
+write.csv(results_reactome_GSEA,"results_reactome_GSEA.csv")
+
+# Check the reactome output
+View(as.data.frame(reactome_gsea[1:40]))
+reactome_gsea@result$Description
+
+# GSEA SARS-CoV-2 Infection
+which(reactome_gsea$Description == "SARS-CoV-2 Infection")
+gsea_plot <- gseaplot2(reactome_gsea, 
+                       geneSetID = 15, 
+                       title = "SARS-CoV-2 Infection (NES = 2.4964)",
+                       pvalue_table = FALSE)
+#https://stackoverflow.com/questions/74610471/how-do-i-make-gsea-plot-with-group-names-labelled
+
+# GSEA SARS-CoV-2 Infection
+which(reactome_gsea$Description == "SARS-CoV-2 Infection")
+test <- enrichplot::gseaplot2(reactome_gsea,
+                              
+                              color = "#0d76ff",
+                              
+                              # first gene set on the list of Hallmarks results generated with the GSEA function
+                              geneSetID = reactome_gsea@result$ID[15],
+                              
+                              #title on plot. Modify it so the remove the underscores and limit the length
+                              title = "SARS-CoV-2 Infection")
+
+test[[3]] <- test[[3]] + 
+  annotate("text", x = c(232.74, 11356.26), y = c(10, 10), label = c("Critical", "Non-critical"), 
+           hjust = c(0, 1))
+
+# Corrected: Add NES and q-value and replace the original plot
+score_plot <- test[[1]] +
+  annotate(
+    "text",
+    x = ggplot_build(test[[1]])$layout$panel_params[[1]]$x.range[1] + 0.8 * diff(ggplot_build(test[[1]])$layout$panel_params[[1]]$x.range),
+    y = ggplot_build(test[[1]])$layout$panel_params[[1]]$y.range[1] + 0.9 * diff(ggplot_build(test[[1]])$layout$panel_params[[1]]$y.range),
+    label = paste(
+      "NES:", round(reactome_gsea@result$NES[15], digits = 4),
+      "\np-value:", formatC(reactome_gsea@result$pvalue[15], format = "e", digits = 3),
+      "\nFDR:", formatC(reactome_gsea@result$qvalue[15], format = "e", digits = 3)
+    ),
+    hjust = 0
+  )
+test[[1]] <- score_plot
+
+# print(test) 
+ggsave("EdgeR_GSEA_SARS-CoV-2_Infection.png", width = 10, height = 8, dpi = 300)
+
+
+# GSEA Neutrophil degranulation
+which(reactome_gsea$Description == "Neutrophil degranulation")
+test <- enrichplot::gseaplot2(reactome_gsea,
+                              
+                              color = "#0d76ff",
+                              
+                              # first gene set on the list of Hallmarks results generated with the GSEA function
+                              geneSetID = reactome_gsea@result$ID[38],
+                              
+                              #title on plot. Modify it so the remove the underscores and limit the length
+                              title = "Neutrophil degranulation")
+
+test[[3]] <- test[[3]] + 
+  annotate("text", x = c(232.74, 11356.26), y = c(10, 10), label = c("Critical", "Non-critical"), 
+           hjust = c(0, 1))
+
+# Corrected: Add NES and q-value and replace the original plot
+score_plot <- test[[1]] +
+  annotate(
+    "text",
+    x = ggplot_build(test[[1]])$layout$panel_params[[1]]$x.range[1] + 0.8 * diff(ggplot_build(test[[1]])$layout$panel_params[[1]]$x.range),
+    y = ggplot_build(test[[1]])$layout$panel_params[[1]]$y.range[1] + 0.9 * diff(ggplot_build(test[[1]])$layout$panel_params[[1]]$y.range),
+    label = paste(
+      "NES:", round(reactome_gsea@result$NES[38], digits = 4),
+      "\np-value:", formatC(reactome_gsea@result$pvalue[38], format = "e", digits = 3),
+      "\nFDR:", formatC(reactome_gsea@result$qvalue[38], format = "e", digits = 3)
+    ),
+    hjust = 0
+  )
+test[[1]] <- score_plot
+
+# Display the modified plot list
+print(test) # Explicitly print the list
+ggsave("EdgeR_GSEA_Neutrophil degranulation.png", width = 10, height = 8, dpi = 300)
+
+
+
+#-----------------------------------------------------------------------------------------
+
+# GSEA MAPK family signalling cascade
+which(reactome_gsea$Description == "MAPK family signaling cascades")
+test <- enrichplot::gseaplot2(reactome_gsea,
+                              
+                              color = "#0d76ff",
+                              
+                              # first gene set on the list of Hallmarks results generated with the GSEA function
+                              geneSetID = reactome_gsea@result$ID[13],
+                              
+                              #title on plot. Modify it so the remove the underscores and limit the length
+                              title = "MAPK family signaling cascades")
+
+test[[3]] <- test[[3]] + 
+  annotate("text", x = c(232.74, 11356.26), y = c(10, 10), label = c("Critical", "Non-critical"), 
+           hjust = c(0, 1))
+
+# Corrected: Add NES and q-value and replace the original plot
+score_plot <- test[[1]] +
+  annotate(
+    "text",
+    x = ggplot_build(test[[1]])$layout$panel_params[[1]]$x.range[1] + 0.8 * diff(ggplot_build(test[[1]])$layout$panel_params[[1]]$x.range),
+    y = ggplot_build(test[[1]])$layout$panel_params[[1]]$y.range[1] + 0.9 * diff(ggplot_build(test[[1]])$layout$panel_params[[1]]$y.range),
+    label = paste(
+      "NES:", round(reactome_gsea@result$NES[13], digits = 4),
+      "\np-value:", formatC(reactome_gsea@result$pvalue[13], format = "e", digits = 3),
+      "\nFDR:", formatC(reactome_gsea@result$qvalue[13], format = "e", digits = 3)
+    ),
+    hjust = 0
+  )
+test[[1]] <- score_plot
+
+# Display the modified plot list
+print(test) # Explicitly print the list
+ggsave("EdgeR_MAPK_family_signaling_cascades.png", width = 10, height = 8, dpi = 300)

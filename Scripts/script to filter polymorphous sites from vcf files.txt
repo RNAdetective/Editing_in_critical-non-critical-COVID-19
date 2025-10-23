@@ -1,0 +1,31 @@
+# This script filters the crude VCF files to exclude homopolymeric sites and keep the rest
+
+#libraries
+library(tidyr)
+
+# import file
+file_path <- "F:\\Manuscript_2\\Original_Data\\snpEff_severeCOVID_per-jacusa2-sites.PRJNA722046\\SRR14240798filtered_snps_finalAll_Annot.vcf.csv"
+
+# Read the file as comma separated file
+data <- read.csv(file_path, sep=",", header=FALSE)
+head(data)
+
+# separate the columns delimited by ";"
+df <- separate(data, 1, into = c("CHROM_POS","CHROM","POS","ID","REF","ALT","FILTER","snpEff_Allele","placeholder"), sep = ";")
+head(df)
+
+# Delete rows with value 'NA" in the column "pass'
+df <- subset(df, !is.na(FILTER))
+
+# write.csv(df, "F:\\Manuscript_2\\Original_Data\\snpEff_severeCOVID_per-jacusa2-sites.PRJNA722046\\test.csv")
+
+df <- separate(df, V8, into = c("snpEff_transcriptBiotype","A"), sep = ";")
+head(df)
+
+# Column names
+new_colnames <- c("CHROM_POS", "CHROM", "POS", "ID", "REF", "ALT", "FILTER", "snpEff_Allele", "place_holder", "snpEff_Annotation", "snpEff_Impact", "snpEff_GeneName", "snpEff_GeneID", "snpEff_FeatureType", "snpEff_FeatureID", "snpEff_transcriptBiotype", "A", "C", "G", "T")
+
+# Assign new column names to the dataframe and write
+colnames(df) <- new_colnames
+write.csv(df, "F:\\Manuscript_2\\Original_Data\\snpEFF_Jacusa_filtered_for_ploymorphous_sites\\SRR14240798.csv" )
+
